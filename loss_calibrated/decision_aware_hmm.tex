@@ -1,0 +1,217 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{parskip} % this effectively obviates the need to use \bigbreak 
+
+
+\newcommand{\vz}{{\bf z}}
+\newcommand{\vx}{{\bf x}}
+\newcommand{\hz}{{\hat{z}}}
+
+\title{Variational Inference for HMM}
+\author{takuto.sato1 }
+\date{August 2019}
+
+\begin{document}
+
+\maketitle
+
+%%%%%%%%%%
+\paragraph{Introduction: stochastic variational inference for HMM}
+
+Let $\pi$ denote the initial state probabilities, $A_{ij}$ the probability of transitioning from the state $i$ to state $j$, and $\phi_k$ the parameters for the emission probability $p(x_i|\phi)$. Let $X = \{x_1, x_2, ..., x_N \}$ denote the observed sequence and $Z = \{ z_1, z_2, ..., z_N \}$ the local latent variable. We may write the joint probability of the HMM model as
+\footnote{We are treating the parameters as fixed quantity for now (will make them random variables soon)}
+
+\begin{equation}
+p(X,Z|\pi, A, \phi) = p(z_1 | \pi) \prod^N_{i = 2} p(z_i|z_{i-1}, A) p(x_i|z_i, \phi)
+\end{equation}
+
+The exact computation of the posterior for the latent states $p(Z|X)$ is intractable \footnote{But we may, using the Viterbi algorithm, compute the maximum a posteriori sequence for given data and parameters. We may also compute the maximum likelihood estimates for parameters $\{ A, \phi, \pi \}$ using the EM algorithm which employs the forward-backward algorithm for the E-step}. Instead, we will find the approximate posterior distribution $q(Z|\lambda)$, where $\lambda$ is some variational parameter. We will do so by the standard means, by maximizing the evidence lower bound (ELBO) with respect to the variational parameters $\lambda$, which is equivalent to minimizing $KL(q(Z)||p(Z|X))$. We will not make any assumptions regarding what form the exact distribution $q(Z)$ will take at this point. (This is the mean field way: only specify the factorization, and the form of the posterior will, if the prior is conjugate to the likelihood, naturally follow that of the prior.) To simplify computation,  we will assume that the approximate posterior factorizes into examples; that is, $q(z) = \prod_i q_i(z_i|\lambda_i)$.
+
+% We don't want to factorize $q(z)$ into $\prod_i q_i(z_i)$ because then all the interesting dependencies are lost. So we must somehow specify the form that $q(z|\lambda)$ takes, I think, then plug it into the stochastic gradient ascent equation)
+
+The evidence lower bound $\mathcal{L}$ may be re-written as follows:
+
+\begin{align*}
+\nabla_\lambda \mathcal{L} &= E_{q(z)} [\nabla_\lambda \log{q(z|\lambda)}(\log{p(x,z) - \log{q(z|\lambda)}})] \\
+&\approx \frac{1}{S} \sum^S_{s=1} \nabla_\lambda \log{q(z_s|\lambda)}(\log{p(x,z_s) - \log{q(z_s|\lambda)}})
+\end{align*}
+
+where $z_s$ is sampled from $q(z|\lambda)$. In order to compute this unbiased estimate of the gradient, we must a) sample from $q(z|\lambda)$ efficiently and b) be able to evaluate, for each sampled value $z_s$, $\nabla_\lambda \log{q(z_s|\lambda)}$\footnote{Eventually, we want to sample from the whole chain $Z = \{ z_1, z_2, \cdots, z_N \}$. But for now, factorize them into examples. In other words, there is a $(k-1)$-dimensional vector $\lambda_i$ for each data point $i$ such that $z_i \sim \mathrm{Categorical}(\lambda_i)$. Ah, but note here that, even though the dependencies are broken in the latent variational approximation of the latent states, the model still knows through the exact likelihood $p(X, Z)$ that they are dependent}. Assuming $q(z)$ factorizes into examples, we may consider each data point $i$ separately.
+
+\begin{align*}
+\nabla_{\lambda_i} \log{q(z_{si}|\lambda_i)} = \nabla_{\lambda_i} \sum_k z_{sik} \log{\lambda_{ik}} \\
+\nabla_{\lambda_i} \log{q(z_{sik} = 1|\lambda_i)} = \frac{1}{\lambda_{ik}}
+\end{align*}
+
+and 0 otherwise. The stochastic gradient step will update $\lambda_i^{t+1} = \lambda_i^{t} - \eta \nabla_{\lambda_i} \log{q(z_{si}|\lambda_i)}$, where $\eta$ is a step size.
+
+% It always takes way too long to load Bayesian decision theory to memory. Let's write a concise guide that will help me remember, and load it more quickly.
+% Read this every day, and edit as needed, until I master it. Read Berger.
+\paragraph{Bayesian decision theory primer}
+The thinking behind the Bayesian decision theory goes like this:
+\begin{itemize}
+    \item There exists a true but known parameter $\theta$
+    \item We observe data $x$ according to $p(x|\theta)$
+    \item Given $x$, we estimate, or classify, according to the decision function $h(x)$
+    \item We may compare our guess $h(x)$ with the truth $\theta$ via the loss function $L(h(x), \theta)$
+    \item Risk is defined as $R(\theta, h) = \int L(\theta, h(x)) p(x|\theta) dx$. Note the integral with respect to $x$, not $\theta$. Once we fix $\theta = \theta'$, we can ask ourselves, what are the risks of different strategies $h \in \mathcal{H} $ given that the true state is $\theta'$?
+\end{itemize}
+
+Now, for different values of $\theta$ we get a different risk, so there's no easy way to compare different strategies $h \in \mathcal{H}$ as is. We may address this in a couple of ways. One way is to choose $h(x)$ that has the lowest worst case loss. This is the \textit{min-max} risk. The other is to put a prior on $p(\theta)$ and integrate the risk with respect to this prior. This is called the \textit{Bayes} risk.
+
+We may show that the decision $h_p$ that minimizes the Bayes risk under a given prior $p(\theta)$ also minimizes the posterior risk $R_p = \int p(\theta|x) L(\theta, h) d\theta$. We denote this optimal decision function by $h_p = \mathrm{argmin}_h \int p(\theta|x) L(\theta, h) d\theta$.
+
+When $p(\theta|x)$ is intractable, as is the case for HMM, we may approximate posterior and arrive at a decision that maximizes the posterior risk under this approximate posterior. The process will look something like:
+
+\begin{itemize}
+    \item For given $x$, find the approximate for the posterior $q(\theta|\lambda)$
+    \item This gives us the \textit{q-posterir risk} $\int L(\theta, h) q(\theta|\lambda) d\theta$
+    \item Which in turns gives us the optimal decision $h_q(x) = \mathrm{argmin}_h \int L(\theta, h) q(\theta|\lambda) d\theta$ under the approximate posterior $q(\theta|\lambda)$.
+    \item \textit{Then} use this $h_q$ to compute the posterior risk with respect to the \textit{real} posterior, which we denote by $R_q = \int L(\theta, h_q) p(\theta|x) d\theta$
+    \item We may evaluate the goodness of $h_q$ by comparing the $R_q$ with the posterior risk of the optimal decision $h_p$: $d_L(q||p) = R_q - R_p$. Note that $R_p$ and $R_q$ are scalars, and $d_L(q||p) > 0$ by the definition of $h_p$.
+\end{itemize}
+
+For different approximations of the posterior $q(\theta|\lambda)$ of $p(\theta|x)$ we may get different decision functions $h_q(x)$, where the subscript denotes the posterior distribution with which we derived the decision function. 
+
+% Where is the starting point? Minimizing $d_L(p||q)$, or finding the lower bound on the posterior gain $\mathcal{G}_{p_D} (h)) = \int p(\theta|x) U(\theta, h) d\theta$.
+
+% So what are we doing here? Maybe a side-by-side comparison will help. Regular variational inference in one column. It seems like the loss-calibrated version assumes that $p_D(\theta)$ is given, but the whole point of variational inference is to compute this. So yea, the inevitably, the first step of this will be go revisit Gaussian Processes and really understand what it is and what not.
+
+% 8:37
+
+%%%%%%%%%%
+\paragraph{Loss-calibrated variational inference}
+In the decision-aware variational inference framework, the objective function is not the evidence lower bound. Rather, it is the difference in the posterior risk using the approximate decision $h_q$ and the optimal decision $h_p$. That is, we minimize
+
+\begin{align}
+d_L(q||p) &= R_q - R_p \\
+          &= \int p(z|x) L(z, h_q) dz - \int p(z|x) L(z, h_p) dz
+\end{align}
+
+with respect to the variational parameters $\lambda$. Here we will discuss how this framework will take shape in the specific case of doing inference on the local latent states $Z$ in an HMM model, where other parameters in the model may be updated but are not random variables. 
+
+For reasons I do not yet see \footnote{They make this leap in going from section 2 to section 3 of the paper}, optimizing $d_L(q||p)$ is equivalent to optimizing what they define as the \textit{gain}
+
+\begin{align}
+\mathcal{G}_{p_D}(h) = \sum_Z p(Z|x) U_M(Z, h)
+\end{align}
+
+where $U_M(Z,h) = M - L(Z,h)$, $M \geq \sup L(Z,h)$, with respect to the variational parameters $\lambda$ and the decision $h$\footnote{This is highly reminiscent of the role model evidence plays in the standard variational inference framework. I suspect that I could give meaningful interpretations to the lower-bound KL-diveregence breakdown in this specific case.}. We use Jensen's inequality to get the lower bound on this new objective function
+
+\begin{align}
+\log \mathcal{G}_{p_D}(h) &= \log \sum_Z q(Z|\lambda) \frac{p(Z|X)U(Z,h_q)}{q(Z|\lambda)} \\
+                          &\geq \sum_Z q(z|\lambda) \log \frac{p(Z|X)U(Z,h_q)}{q(Z|\lambda)} = \mathcal{L}
+\end{align}
+
+
+ We optimize this lower bound $\mathcal{L}$ with respect to the variational parameters $\lambda$, the decision function $h$, and the model parameters $\theta \in \{ A, \pi, \phi \}$. We may further rewrite the lower bound $\mathcal{L}$ as 
+ 
+\begin{align}
+\mathcal{L} &= \sum_Z q(z|\lambda) \log \frac{p(Z|X)U(Z,h_q)}{q(Z|\lambda)} \\
+            &= \sum_Z q(z|\lambda) \log \frac{p(Z,X)U(Z,h_q)}{p(X) q(Z|\lambda)} \\
+            &= \sum_Z \Big[ q(z|\lambda) \log \frac{p(Z,X)U(Z,h_q)}{q(Z|\lambda)} \Big] - \log p(X|\theta) \label{elbo}
+\end{align}
+ 
+The term $\log p(X)$ is independent of the variational parmaeters $\lambda$ and therefore will drop when we take the gradient with respect to $\lambda$ (but it does not with respect to $\theta$).
+
+We will follow the paper and update the parameters iteratively while fixing others as is done in the EM algorithm, as follows:
+
+%%%%%
+\textit{Update $q(Z|\lambda)$}: We update the variational parameters $\lambda$ with stochastic variational inference. Applying the log derivative trick\footnote{Would it be benefitial to instead use the reparameterization trick?} on (\ref{elbo}), we have
+
+\begin{align}
+\nabla \mathcal{L} &= \mathbb{E}_{q(z)} \Big[ \nabla_{\lambda} \log q(Z|\lambda) \big[ \log p(Z,X) U(Z,h) - \log q(z|\lambda) \big] \Big] \\
+                   &\approx (1/S) \sum_s \nabla_{\lambda} \log q(Z_s|\lambda) \big[ \log p(Z_s,X) U(Z_s,h) - \log q(z_s|\lambda) \big]
+\end{align}
+
+where we draw $S$ samples of $Z_s$ from $q(Z|\lambda)$ using the current values of $\lambda$. In order to compute this gradient, we must be able to:
+
+\begin{enumerate}
+    \item Sample $Z_s$ from $q(Z|\lambda)$. Then, given $Z_s$, we must:
+    \item evaluate $U(Z_s, h)$ using the current decision $h$,
+    \item evaluate $\nabla_{\lambda} \log q(Z_s|\lambda)$, and
+    \item evaluate $p(Z_s,X)$.
+\end{enumerate}
+
+We can do (1). There is even a way to sample from the whole chain (as opposed to treating each time step $i$ as iid i.e. $q(z_i|X)$), which I think is described in the Scott paper from 2012. We can assume (2) is easy using the value of $h(X)$ from the previous iteration. I think we can do (3) too -- even without assuming that the $q(Z)$ factorizes into time steps, but I could be wrong. (4) is straightforward.
+
+%%%%%
+\textit{Update $\theta$}: Once we fix $q(z|\lambda)$ and $h$, the utility $U$ is a constant as a function of $\theta$. Thus we may update $\theta$ the standard way using the effective counts from the current distribution of $q(z|\lambda)$.
+
+%%%%%
+\textit{Update $h$}: The update of the decision depends on the loss function. Recall that updating $h$ must compute
+
+\begin{equation}
+h(X) = \mathrm{argmin}_h \sum_Z L(Z, h(X)) q(Z|X)
+\end{equation}
+
+Here we will use the one-zero loss $L(Z, h(X)) = (Z - h(X))^2$. Note that $L$ maps $\{1,2,...,K\}^T \times \{1,2,...,K\}^T \mapsto \mathbb{R}$
+
+Although I have not proven this formally, I believe there exists a loss function where for a given $q(Z|\lambda)$ and $\theta$, the optimal decision \footnote{in the Bayes risk sense -- I need to flesh out this argument} is the maximum a posteriori sequence of $Z$ with respect to $q(Z|\lambda)$, like how the Bayes estimator (i.e. the optimal decision function) is the posterior \textit{mean} for the squared loss, the posterior \textit{median} for the $L_1$ loss, the posterior mode (i.e. MAP) for the zero-one loss (Wasserman page 198). For now, given $q(z|\lambda)$ we update $h$ with the MAP estimate of the current posterior $q(z|\lambda)$ using the Viterbi algorithm.
+
+%%%%%
+\paragraph{Bayes estimate for the symmetric loss function}
+The Bayes estimate $\hat{\theta}$ is the estimator (or broadly a decision function $h(X)$) that maximizes the expected loss under the posterior
+
+\begin{equation}
+\mathbb{E}_\lambda[L(\theta, \hat{\theta})] = \int L(\theta, \hat{\theta}) q(\theta|\lambda) d\theta   
+\end{equation}
+
+Or, in the case of the HMM
+
+\begin{equation}
+\mathbb{E}_\lambda[L(z, \hat{z})] = \sum_z L(z, \hat{z}) q(z|\lambda) 
+\end{equation}
+
+Consider the simplest case where the chain has length one and the loss is the zero-one loss function $L(z, \hat{z}) = \mathbb{I}(\hat{z} \neq z)$, where $\mathbb{I}$ is the indicator function. Then we have
+
+\begin{align}
+\mathbb{E}_\lambda[L(z, \hat{z})] &= \sum_{z} \mathbb{I}(\hat{z} \neq z) q(z|\lambda) \\
+                                  &= 1 - q(\hat{z}|\lambda)
+\end{align}
+
+The estimator $\hat{z}$ that minimizes this expected loss is therefore the maximum of the function $q(z|\lambda)$.
+
+Next consider the asymmetric loss for the case of two states $z \in  \{ z_1, z_2 \}$ and the chain length of one. Let
+
+\[
+ L(z, \hat{z}) = 
+  \begin{cases} 
+   a  & \text{if } z = z_1 \neq \hat{z} \\
+   b  & \text{if } z = z_2 \neq \hat{z} \\
+   0  & \text{if } z = \hz
+  \end{cases}
+\]
+
+Then the expected loss is as a function of $\hat{z}$ is
+
+\[
+ \mathbb{E}_\lambda[L(z, \hat{z})] = 
+  \begin{cases} 
+   b \cdot q(z_2|\lambda)  & \text{if } \hz = z_1 \\
+   a \cdot q(z_1|\lambda)  & \text{if } \hz = z_2
+  \end{cases}
+\]
+
+Then the optimal (bayes?) estimator is one that minimizes the posterior of the other state weighted by the loss weight $a$ or $b$.
+
+The case for $K > 2$ states is analogous. Let $l_k$ denote the loss weight for misclassifying when $z = z_k$ (i.e. $a = l_1, b = l_2$ in the above example), then we have
+
+\begin{equation}
+\mathbb{E}_\lambda[L(z, \hat{z} = z_k)] = \sum_{i \neq k} l_i q(z_i|\lambda)
+\end{equation}
+
+Finding the optimal estimator therefore scales with the number of state $K$. 
+
+Now consider the chain of length $T > 1$. Suppose, for now, that the loss is homogeneous across the chain. Then the loss is simply the sum of the above loss function for single-chain case across the chain i.e. $L(\vz, \hat{\vz}) = \sum_{i=1}^T L(z_i, \hz_i)$ and the expected loss for a given posterior $q(\vz|\lambda)$ is
+
+
+\begin{align}
+\mathbb{E}_\lambda[L(\vz, \hat{\vz})] &= \sum_{\vz} L(\vz, \hat{\vz}) q(\vz)  \\
+                                      &= \sum_{\vz} \sum_i L(z_i, \hz_i) q(\vz) \\
+                                      &= 
+\end{align}
+
+\end{document}
